@@ -1,143 +1,143 @@
-import cv2
+import sys
+import pickle
 import numpy as np
+from sklearn.tree import DecisionTreeClassifier
 
-# --- 1. 보드 상태 변환 함수 ---
-def normalize_board(board_str):
-    """다양한 길이의 보드 상태를 9자리 문자열로 변환"""
-    if len(board_str) == 9:
-        return board_str
+# --- 1. 기능 정의 (이전 코드와 동일한 로직 유지) ---
+def get_lines_passing_through(idx):
+    all_lines = [
+        [0,1,2], [3,4,5], [6,7,8], # 가로
+        [0,3,6], [1,4,7], [2,5,8], # 세로
+        [0,4,8], [2,4,6]           # 대각선
+    ]
+    return [line for line in all_lines if idx in line]
+
+def get_global_context(board_str, player):
+    possible_wins = 0
+    possible_moves = [i for i, c in enumerate(board_str) if c == ' ']
+    for move in possible_moves:
+        lines = get_lines_passing_through(move)
+        for line in lines:
+            others = [board_str[i] for i in line if i != move]
+            if others.count(player) == 2 and others.count(' ') == 0:
+                possible_wins += 1
+                break
+    return 1 if possible_wins > 0 else 0
+
+def get_final_features(board_str, move_idx, player, global_win_exist):
+    opponent = 'O' if player == 'X' else 'X'
+    lines = get_lines_passing_through(move_idx)
     
-    # 9자리로 패딩 (뒤에 공백 추가)
-    normalized = board_str.ljust(9, ' ')
-    return normalized
-
-# --- 2. 미니맥스 알고리즘 ---
-def check_win(board_str):
-    if len(board_str) != 9: return None
-    b = list(board_str)
-    lines = [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]
+    intersecting_count = len(lines)
+    my_2_lines = 0; opp_2_lines = 0; my_1_lines = 0; opp_1_lines = 0
+    
     for line in lines:
-        if b[line[0]] == b[line[1]] == b[line[2]] and b[line[0]] != ' ':
-            return b[line[0]]
-    if ' ' not in b: return 'draw'
-    return None
-
-def get_turn(board_str):
-    return 'O' if board_str.count('X') > board_str.count('O') else 'X'
-
-def minimax(board_str, player, depth=0):
-    """완전한 미니맥스 알고리즘 - 모든 가능한 게임 트리를 탐색"""
-    winner = check_win(board_str)
-    if winner:
-        if winner == 'X': 
-            return 100 - depth, []  # X 승리: 깊이에 따라 점수 차등
-        elif winner == 'O': 
-            return -100 + depth, []  # O 승리: 깊이에 따라 점수 차등
-        else: 
-            return 0, []  # 무승부
-
-    moves = [i for i, char in enumerate(board_str) if char == ' ']
-    if not moves:
-        return 0, []  # 더 이상 둘 수 없으면 무승부
+        others = [board_str[i] for i in line if i != move_idx]
+        my_cnt = others.count(player)
+        opp_cnt = others.count(opponent)
         
-    best_moves = []
-    if player == 'X':
-        best_score = -float('inf')
-        for move in moves:
-            next_board_list = list(board_str)
-            next_board_list[move] = 'X'
-            score, _ = minimax("".join(next_board_list), 'O', depth + 1)
-            if score > best_score: 
-                best_score = score
-                best_moves = [move]
-            elif score == best_score:
-                best_moves.append(move)
+        if my_cnt == 2 and opp_cnt == 0: my_2_lines += 1
+        elif opp_cnt == 2 and my_cnt == 0: opp_2_lines += 1
+        elif my_cnt == 1 and opp_cnt == 0: my_1_lines += 1
+        elif opp_cnt == 1 and my_cnt == 0: opp_1_lines += 1
+            
+    return [intersecting_count, my_2_lines, opp_2_lines, my_1_lines, opp_1_lines, global_win_exist]
+
+# --- 2. 시각화 로직 ---
+def visualize_error(state, move_idx, feats, true_y, pred_y, error_type, count):
+    player = 'X' if state.count('X') == state.count('O') else 'O'
+    board = list(state)
+    board[move_idx] = '?' # AI가 고민한 자리
+    
+    print(f"\n[{count}] {error_type} ===================================")
+    print(f" Turn: {player}")
+    print(f" {board[0]} | {board[1]} | {board[2]} ")
+    print("-----------")
+    print(f" {board[3]} | {board[4]} | {board[5]} ")
+    print("-----------")
+    print(f" {board[6]} | {board[7]} | {board[8]} ")
+    
+    # 특징 해석
+    geo_map = {4: "중앙", 3: "구석", 2: "변"}
+    geo_str = geo_map.get(feats[0], "기타")
+    
+    print(f"\n🔎 AI의 판단 근거 (Features):")
+    print(f" 1. 위치: {geo_str} (선 {feats[0]}개 교차)")
+    print(f" 2. 내 킬각 (Me_Win)  : {feats[1]}")
+    print(f" 3. 적 킬각 (Op_Win)  : {feats[2]}")
+    print(f" 4. 내 포크 (Me_Fork) : {feats[3]}")
+    print(f" 5. 적 포크 (Op_Fork) : {feats[4]}  <-- 위험 요소")
+    print(f" 6. 딴데 킬각(Global) : {'있음' if feats[5] else '없음'}")
+    
+    if error_type == "False Negative":
+        print(f"\n❌ AI 결론: \"여기 별로야..\" (Pred: 0)")
+        print(f"✅ 실제 정답: \"여기 둬야 해!\" (True: 1)")
+        print(" -> 분석: 왜 AI는 이 좋은 수를 놓쳤을까? (특수 오프닝? 강제수?)")
     else:
-        best_score = float('inf')
-        for move in moves:
-            next_board_list = list(board_str)
-            next_board_list[move] = 'O'
-            score, _ = minimax("".join(next_board_list), 'X', depth + 1)
-            if score < best_score: 
-                best_score = score
-                best_moves = [move]
-            elif score == best_score:
-                best_moves.append(move)
-    return best_score, best_moves
+        print(f"\n❌ AI 결론: \"여기 좋아!\" (Pred: 1)")
+        print(f"✅ 실제 정답: \"거긴 아니야.\" (True: 0)")
+        print(" -> 분석: AI가 '내 포크'나 '위치'만 보고 설레발 친 경우일 수 있음.")
 
-def find_best_moves(board_str):
-    if check_win(board_str): return []
-    player = get_turn(board_str)
-    _, best_moves = minimax(board_str, player)
-    return best_moves
-
-# --- 2. OpenCV 시각화 (이전과 동일) ---
-def draw_board(state, best_moves):
-    img = np.full((300, 300, 3), 240, dtype=np.uint8)
-    for i in range(1, 3):
-        cv2.line(img, (i * 100, 0), (i * 100, 300), (0, 0, 0), 2)
-        cv2.line(img, (0, i * 100), (300, i * 100), (0, 0, 0), 2)
-
-    for i, char in enumerate(state):
-        if char == ' ': continue
-        row, col = i // 3, i % 3
-        center_x, center_y = col * 100 + 50, row * 100 + 50
-        if char == 'X':
-            cv2.line(img, (center_x-30, center_y-30), (center_x+30, center_y+30), (0,0,0), 4)
-            cv2.line(img, (center_x+30, center_y-30), (center_x-30, center_y+30), (0,0,0), 4)
-        else:
-            cv2.circle(img, (center_x, center_y), 30, (0,0,0), 4)
-
-    # 모든 최적의 수를 빨간색으로 표시
-    if best_moves:
-        player = get_turn(state)
-        for best_move_idx in best_moves:
-            row, col = best_move_idx // 3, best_move_idx % 3
-            center_x, center_y = col * 100 + 50, row * 100 + 50
-            if player == 'X':
-                cv2.line(img, (center_x-30, center_y-30), (center_x+30, center_y+30), (0,0,255), 4)
-                cv2.line(img, (center_x+30, center_y-30), (center_x-30, center_y+30), (0,0,255), 4)
-            else:
-                cv2.circle(img, (center_x, center_y), 30, (0,0,255), 4)
-    return img
-
-# --- 3. 메인 로직 ---
-try:
-    with open('unique_states.txt', 'r', encoding='utf-8') as f:
-        states = [line.strip() for line in f.readlines() if line.strip()]
-    print(f"파일에서 성공적으로 로드한 상태의 수: {len(states)}")
-except FileNotFoundError:
-    print("오류: 'unique_states.txt' 파일을 찾을 수 없습니다."); exit()
-if not states:
-    print("오류: 'unique_states.txt' 파일에서 유효한 상태를 찾을 수 없습니다."); exit()
-
-current_idx = 0
-print("OpenCV 창이 뜨면 'n' 키를 눌러 다음 상태를 확인하세요. 'q' 키로 종료합니다.")
-
-while True:
-    state = states[current_idx]
-    normalized_state = normalize_board(state)
-    best_moves = find_best_moves(normalized_state)
-    board_image = draw_board(normalized_state, best_moves)
+def analyze_all_errors():
+    print("🕵️‍♀️ Analyzing Logic Failures...")
     
-    # 상태 정보 텍스트 (State x / 765)
-    info_text = f"State {current_idx + 1} / {len(states)}"
-    cv2.putText(board_image, info_text, (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 100, 100), 2)
+    try:
+        with open('perfect_lookup_table.pkl', 'rb') as f:
+            lookup_table = pickle.load(f)
+    except FileNotFoundError:
+        print("룩업 테이블 없음")
+        return
 
-    # 코드가 판단한 현재 게임 상태를 화면에 직접 표시
-    winner = check_win(normalized_state)
-    if winner == 'X': status_text = "Status: X Wins"
-    elif winner == 'O': status_text = "Status: O Wins"
-    elif winner == 'draw': status_text = "Status: Draw"
-    else: status_text = "Status: In Progress"
-    cv2.putText(board_image, status_text, (5, 290), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    X = []; y = []; meta = []
+
+    # 데이터 준비
+    for state, best_moves in lookup_table.items():
+        current_player = 'X' if state.count('X') == state.count('O') else 'O'
+        global_win = get_global_context(state, current_player)
+        possible_moves = [i for i, c in enumerate(state) if c == ' ']
+        
+        for move in possible_moves:
+            feats = get_final_features(state, move, current_player, global_win)
+            is_best = 1 if move in best_moves else 0
+            
+            X.append(feats)
+            y.append(is_best)
+            meta.append((state, move))
+
+    # 학습 및 예측
+    dt = DecisionTreeClassifier(max_depth=7, random_state=42)
+    dt.fit(X, y)
+    predictions = dt.predict(X)
     
-    cv2.imshow("Tic-Tac-Toe Best Move", board_image)
+    # 틀린 것 출력
+    fn_count = 0
+    fp_count = 0
+    max_show = 10  # 너무 많이 보면 어지러우니까 타입별로 10개씩만 보자
+    
+    print("\n🚨 [False Positive: 틀렸는데 좋다고 한 것] (Top 10)")
+    for i in range(len(predictions)):
+        if predictions[i] == 1 and y[i] == 0:
+            if fp_count < max_show:
+                visualize_error(meta[i][0], meta[i][1], X[i], y[i], predictions[i], "False Positive", fp_count+1)
+            fp_count += 1
+            
+    print("\n" + "="*60)
+    print("\n🚨 [False Negative: 정답인데 겁먹고 안 둔 것] (Top 10)")
+    for i in range(len(predictions)):
+        if predictions[i] == 0 and y[i] == 1:
+            if fn_count < max_show:
+                visualize_error(meta[i][0], meta[i][1], X[i], y[i], predictions[i], "False Negative", fn_count+1)
+            fn_count += 1
 
-    key = cv2.waitKey(0) & 0xFF
-    if key == ord('n'):
-        current_idx = (current_idx + 1) % len(states)
-    elif key == ord('q'):
-        break
+    print("\n" + "="*60)
+    print(f"총 분석 결과:")
+    print(f" - 정답 놓침 (False Negative): {fn_count}개")
+    print(f" - 오답 선택 (False Positive): {fp_count}개")
+    print(f" - 전체 정확도: {accuracy_score(y, predictions)*100:.2f}%")
+    print("="*60)
 
-cv2.destroyAllWindows()
+# accuracy_score import 추가 필요
+from sklearn.metrics import accuracy_score
+
+if __name__ == "__main__":
+    analyze_all_errors()
