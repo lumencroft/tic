@@ -1,165 +1,118 @@
 import pickle
 import itertools
 
-def load_data(filename='tictactoe_all_moves.pkl'):
+# 틱택토의 8개 라인 정의 (가로3, 세로3, 대각2)
+# 순서는 중요하지 않음. 그냥 'Line'이라는 집합일 뿐.
+LINES = [
+    {0, 1, 2}, {3, 4, 5}, {6, 7, 8}, # 가로
+    {0, 3, 6}, {1, 4, 7}, {2, 5, 8}, # 세로
+    {0, 4, 8}, {2, 4, 6}             # 대각
+]
+
+def load_data(filename='tictactoe_classified_moves.pkl'):
     with open(filename, 'rb') as f:
         return pickle.load(f)
 
-def is_superset_of_existing(current_causes, current_pattern, turn, target, minimal_rules):
-    for rule in minimal_rules:
-        if rule['target'] != target: continue
-        if rule['turn'] != turn: continue
-        
-        old_causes_set = set(rule['cause_indices'])
-        current_causes_set = set(current_causes)
-        
-        if not old_causes_set.issubset(current_causes_set): continue
-        
-        match = True
-        for old_idx, old_val in zip(rule['cause_indices'], rule['cause_pattern']):
-            curr_pos = current_causes.index(old_idx)
-            if current_pattern[curr_pos] != old_val:
-                match = False
-                break
-        
-        if match:
-            return True 
-    return False
-
-def analyze_multipass_logic_exact(policy):
-    print("응... 네 지시대로 '남은 빈칸 전부가 정답'인 판만 정확하게 쳐낼게... ♡\n")
+# 두 점 집합 사이의 '관계(Relationship)'를 추출하는 함수
+def get_topological_signature(cause_indices, target_index):
+    # 1. 원인(Cause) 돌들이 공유하는 라인이 있는가?
+    cause_set = set(cause_indices)
+    shared_lines_cause = [line for line in LINES if cause_set.issubset(line)]
     
-    active_pairs = set()
-    for state, moves in policy.items():
-        empty_count = state.count(' ')
-        if empty_count <= 1: continue
+    # 2. 결과(Target) 돌이 원인 돌들과 어떤 라인을 공유하는가?
+    # (Target과 Cause 중 하나라도 같이 묶이는 라인 개수)
+    relations = []
+    
+    # Cause가 1개일 때
+    if len(cause_indices) == 1:
+        c = cause_indices[0]
+        # Target과 같은 라인에 있는가?
+        common_lines = [line for line in LINES if c in line and target_index in line]
+        if common_lines:
+            return "Same_Line_Extension" # 같은 줄 옆자리
+        else:
+            return "Disjoint_Position" # 아예 관계없는 자리 (말이 안됨 틱택토에서)
+
+    # Cause가 2개 이상일 때
+    # Case A: Cause들이 이미 한 줄을 만들고 있는가?
+    if shared_lines_cause:
+        # 그 줄에 Target도 포함되는가?
+        if any(target_index in line for line in shared_lines_cause):
+            return "Line_Completion" # 2개가 찼고 나머지 하나를 채움 (공격/방어)
+        else:
+            return "Line_Irrelevant" # 줄은 맞는데 엉뚱한 데 둠
+
+    # Case B: Cause들이 흩어져 있음 (L자 형태 등)
+    else:
+        # Target이 이 흩어진 점들과 '동시에' 라인을 형성하는가? (포크의 중심)
+        # Target과 Cause[0]이 공유하는 라인 수
+        lines_with_c0 = sum(1 for line in LINES if cause_indices[0] in line and target_index in line)
+        # Target과 Cause[1]이 공유하는 라인 수
+        lines_with_c1 = sum(1 for line in LINES if cause_indices[1] in line and target_index in line)
         
-        # ★ 네가 짚어준 핵심 로직 수정 ★
-        # 정답이 여러 개(len > 1)인 게 문제가 아니라, 
-        # 남은 빈칸 전부가 다 정답(어딜 둬도 똑같음)인 보드만 제외!
-        if len(moves) == empty_count: 
-            continue 
-            
-        for m in moves:
-            active_pairs.add((state, m))
+        if lines_with_c0 > 0 and lines_with_c1 > 0:
+            return "Fork_Intersection" # 두 개의 다른 라인이 만나는 교차점
+        elif lines_with_c0 > 0 or lines_with_c1 > 0:
+            return "Single_Link" # 한쪽하고만 연결됨
+        else:
+            return "No_Relation" # 아무 관계 없음
 
-    max_cause_k = 4 
-    global_minimal_rules = [] 
+    return "Undefined"
 
-    for cause_k in range(1, max_cause_k + 1):
-        total_k = cause_k + 1 
-        pass_num = 1
+def analyze_topology_logic(policy):
+    print(f"\n{'='*20} [Topological Universal Logic] {'='*20}")
+
+    # Win, Draw, Lose 모두 분석
+    categories = ['Win', 'Lose', 'Draw']
+    
+    for category in categories:
+        print(f"--- 분석 중: {category} ---")
+        logic_groups = {} # Key: Signature, Value: Count
+
+        # 데이터 샘플링 (너무 많으니 일부만 보면서 패턴 추출)
+        # 실제로는 전체를 돌려야 정확함
+        processed_count = 0
         
-        while True:
-            print(f"--- [Step {total_k} - Pass {pass_num}] 분석 중... ---")
-            
-            new_rules_this_pass = []
-            indices_combinations = list(itertools.combinations(range(9), cause_k))
-            
-            for indices in indices_combinations:
-                remaining_cells = [i for i in range(9) if i not in indices]
-                
-                seen_configs = set()
-                for state in policy.keys():
-                    empty_count = state.count(' ')
-                    if empty_count <= 1: continue
-                    # 여기서도 동일하게 필터링 적용
-                    if len(policy[state]) == empty_count: continue 
-                    
-                    pat = tuple(state[i] for i in indices)
-                    turn = 'X' if state.count('X') == state.count('O') else 'O'
-                    seen_configs.add((pat, turn))
+        for state, classification in policy.items():
+            moves = classification.get(category, [])
+            if not moves: continue
+            empty_count = state.count(' ')
+            if len(moves) == empty_count: continue # 의미 없는 판 제외
 
-                for pattern, turn in seen_configs:
-                    for target in remaining_cells:
-                        
-                        if is_superset_of_existing(indices, pattern, turn, target, global_minimal_rules):
-                            continue
-                            
-                        matching_pairs_for_this_rule = []
-                        is_100_pct = True
-                        
-                        for state, moves in policy.items():
-                            empty_count = state.count(' ')
-                            if empty_count <= 1: continue
-                            
-                            # ★ 철저한 배제 로직: 남은 칸 전부가 정답인 판만 무시!
-                            if len(moves) == empty_count: 
-                                continue 
-                            
-                            if not any((state, m) in active_pairs for m in moves):
-                                continue
-                                
-                            current_turn = 'X' if state.count('X') == state.count('O') else 'O'
-                            if current_turn != turn: continue
-                            
-                            current_pat = tuple(state[i] for i in indices)
-                            if current_pat != pattern: continue
-                            
-                            if state[target] != ' ': continue
-                            
-                            if target not in moves:
-                                is_100_pct = False
-                                break 
-                                
-                            if (state, target) in active_pairs:
-                                matching_pairs_for_this_rule.append((state, target))
-                        
-                        if not is_100_pct or len(matching_pairs_for_this_rule) < 2:
-                            continue
-                            
-                        first_state = matching_pairs_for_this_rule[0][0]
-                        is_exact_match = True
-                        
-                        for i in range(9):
-                            if i == target or i in indices: 
-                                continue
-                            is_common = True
-                            for state, _ in matching_pairs_for_this_rule:
-                                if state[i] != first_state[i]:
-                                    is_common = False
-                                    break
-                            if is_common:
-                                is_exact_match = False
-                                break
-                                
-                        if is_exact_match:
-                            new_rule = {
-                                'cause_indices': indices,
-                                'cause_pattern': pattern,
-                                'turn': turn,
-                                'target': target,
-                                'count': len(matching_pairs_for_this_rule),
-                                'pairs_to_remove': matching_pairs_for_this_rule
-                            }
-                            new_rules_this_pass.append(new_rule)
-                            global_minimal_rules.append(new_rule)
+            # 현재 턴 확인
+            turn = 'X' if state.count('X') == state.count('O') else 'O'
 
-            if not new_rules_this_pass:
-                print(f" -> Pass {pass_num} 결과: 더 이상 규칙 없음... ♡\n")
-                break 
-
-            print(f" -> Pass {pass_num} 결과: {len(new_rules_this_pass)}개의 규칙 발견... ♡")
+            # 2개의 돌이 깔린 상황만 집중적으로 보자 (네가 말한 포크/라인 상황)
+            # 내 돌이 2개 깔려있을 때, 상대 돌이 2개 깔려있을 때 등
             
-            for rule in new_rules_this_pass:
-                for pair in rule['pairs_to_remove']:
-                    if pair in active_pairs:
-                        active_pairs.remove(pair) # 증명 끝난 조합 풀에서 소거
+            my_stones = [i for i, x in enumerate(state) if x == turn]
+            opp_stones = [i for i, x in enumerate(state) if x != turn and x != ' ']
             
-            sorted_rules = sorted(new_rules_this_pass, key=lambda x: (x['cause_indices'], x['target']))
-            for rule in sorted_rules:
-                full_conditions = list(zip(rule['cause_indices'], rule['cause_pattern']))
-                full_conditions.append((rule['target'], ' '))
-                full_conditions.sort(key=lambda x: x[0])
-                
-                cond_str = ", ".join([f"{idx}:{val}" for idx, val in full_conditions])
-                print(f"    IF [{cond_str}] & Turn='{rule['turn']}' -> {rule['target']} (Boards: {rule['count']})")
-                
-            pass_num += 1 
+            # 간단하게 '원인'을 '현재 판에 깔린 내 돌 2개'라고 가정하고 분석해봄
+            # (실제로는 상대 돌 때문에 두는 경우도 있으니 복합적임)
+            
+            for m in moves:
+                # 1. 내 돌 2개와 관계 분석 (공격/마무리)
+                if len(my_stones) >= 2:
+                    for pair in itertools.combinations(my_stones, 2):
+                        sig = get_topological_signature(pair, m)
+                        key = (f"My_Stones_{category}", sig)
+                        logic_groups[key] = logic_groups.get(key, 0) + 1
 
-    print("=" * 60)
-    print(f" [최종 결론] 제약 조건이 존재하는 진짜 보드들로만 뽑아낸 완벽한 규칙: 총 {len(global_minimal_rules)}개... ♡")
+                # 2. 상대 돌 2개와 관계 분석 (방어/자살)
+                if len(opp_stones) >= 2:
+                    for pair in itertools.combinations(opp_stones, 2):
+                        sig = get_topological_signature(pair, m)
+                        key = (f"Opp_Stones_{category}", sig)
+                        logic_groups[key] = logic_groups.get(key, 0) + 1
+        
+        # 결과 출력
+        # 빈도수가 높은 상위 패턴만 출력
+        sorted_groups = sorted(logic_groups.items(), key=lambda x: x[1], reverse=True)
+        for (context, sig), count in sorted_groups[:5]:
+             print(f"  [{context}] 패턴: {sig} (발견 횟수: {count})")
+        print("")
 
 # 실행
-data = load_data()
-analyze_multipass_logic_exact(data)
+data = load_data('tictactoe_classified_moves.pkl')
+analyze_topology_logic(data)

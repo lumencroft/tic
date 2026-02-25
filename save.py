@@ -3,6 +3,7 @@ import csv
 
 class TicTacToeSolver:
     def __init__(self):
+        # Key: Board State, Value: { 'Win': [], 'Draw': [], 'Lose': [] }
         self.policy = {} 
         
     def check_winner(self, board):
@@ -22,6 +23,7 @@ class TicTacToeSolver:
         state_key = "".join(board)
         
         winner = self.check_winner(board)
+        # 점수 계산: 빨리 이길수록(+), 늦게 질수록(-) 좋음
         if winner == 'X': return 10 - depth  
         if winner == 'O': return -10 + depth 
         if winner == 'Draw': return 0
@@ -39,40 +41,51 @@ class TicTacToeSolver:
             scores.append(score)
             moves.append(move)
 
-        if is_maximizing:
-            best_score = max(scores) 
-        else:
-            best_score = min(scores) 
+        # --- 여기서부터 분류 로직 ---
+        move_classification = {'Win': [], 'Draw': [], 'Lose': []}
+        
+        for m, s in zip(moves, scores):
+            if is_maximizing: # 내 차례 (X)
+                if s > 0: move_classification['Win'].append(m)
+                elif s == 0: move_classification['Draw'].append(m)
+                else: move_classification['Lose'].append(m)
+                best_score = max(scores)
+            else: # 상대 차례 (O) - O 입장에서는 점수가 낮아야 이기는 것
+                if s < 0: move_classification['Win'].append(m) # O 승리
+                elif s == 0: move_classification['Draw'].append(m)
+                else: move_classification['Lose'].append(m) # O 패배 (X 승리)
+                best_score = min(scores)
 
-        optimal_moves = [m for m, s in zip(moves, scores) if s == best_score]
-
-        # ★ 수정됨: '모든 수가 같다'는 멍청한 조건 삭제! 
-        # 오직 '명백하게 지는 판(패배 확정)'일 때만 빈 배열로 처리!
-        if (is_maximizing and best_score < 0) or \
-           (not is_maximizing and best_score > 0):
-            optimal_moves = []
-
-        self.policy[state_key] = optimal_moves
+        # 상태별로 3가지 분류를 모두 저장 (단, 게임이 끝난 상태는 저장 안 함)
+        if possible_moves:
+            self.policy[state_key] = move_classification
         
         return best_score
 
     def solve_and_save(self):
-        print("양수걸이를 포기로 착각하는 멍청한 버그 수정 완료... ♡")
+        print("모든 수를 승/무/패로 분류하여 분석 시작... ♡")
         initial_board = [' '] * 9
         self.minimax(initial_board, 0, True) 
         
-        print(f"계산 끝! 총 {len(self.policy)}개의 상태 저장 완료.")
+        print(f"분석 끝! 총 {len(self.policy)}개의 상태 분류 완료.")
 
-        with open('tictactoe_all_moves.pkl', 'wb') as f:
+        # 1. 피클로 저장 (딕셔너리 구조 유지)
+        with open('tictactoe_classified_moves.pkl', 'wb') as f:
             pickle.dump(self.policy, f)
 
-        with open('tictactoe_all_moves.csv', 'w', newline='', encoding='utf-8') as f:
+        # 2. CSV로 저장 (눈으로 보기 좋게)
+        with open('tictactoe_classified_moves.csv', 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Board_State', 'Optimal_Moves'])
-            for state, moves in self.policy.items():
-                moves_str = " ".join(map(str, moves))
-                writer.writerow([state, moves_str])
-        print(" -> 완벽하게 정제된 데이터 완성! ♡")
+            writer.writerow(['Board_State', 'Win_Moves', 'Draw_Moves', 'Lose_Moves'])
+            
+            for state, classification in self.policy.items():
+                win_str = " ".join(map(str, classification['Win']))
+                draw_str = " ".join(map(str, classification['Draw']))
+                lose_str = " ".join(map(str, classification['Lose']))
+                
+                writer.writerow([state, win_str, draw_str, lose_str])
+                
+        print(" -> 완벽하게 분류된 데이터셋 완성! (Lose 데이터가 핵심이야)")
 
 # 실행
 solver = TicTacToeSolver()
